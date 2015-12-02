@@ -10,13 +10,15 @@
 #import "Emitter.h"
 #import "Rocker.h"
 
-NSString * const kXActivatePowerModeEnabled = @"qfi.sh.xcodeplugin.activatepowermode.enabled";
+NSString * const kXActivatePowerModeEmitEnabled = @"qfi.sh.xcodeplugin.activatepowermodeemit.enabled";
+NSString * const kXActivatePowerModeRollEnabled = @"qfi.sh.xcodeplugin.activatepowermoderoll.enabled";
 
 static XActivatePowerMode * __sharedPlugin = nil;
 
 @interface XActivatePowerMode()
 
-@property (nonatomic, weak, readwrite) NSMenuItem * menuItem;
+@property (nonatomic, weak, readwrite) NSMenuItem * menuItemEmitter;
+@property (nonatomic, weak, readwrite) NSMenuItem * menuItemRoller;
 
 @property (nonatomic, strong, readwrite) NSBundle * bundle;
 
@@ -64,7 +66,8 @@ static XActivatePowerMode * __sharedPlugin = nil;
     [self setupMenu];
     
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(3 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-        [self setActivatePowerModeEnabled:[self isActivatePowerModeEnabled]];
+        [self setActivatePowerModeEmitEnabled:[self isEmitModeEnabled]];
+        [self setActivatePowerModeRollEnabled:[self isRollModeEnabled]];
     });
 }
 
@@ -87,23 +90,46 @@ static XActivatePowerMode * __sharedPlugin = nil;
         NSInteger editingLocation = [[[textView selectedRanges] objectAtIndex:0] rangeValue].location;
         NSUInteger count = 0;
         NSRect targetRect = *[textView.layoutManager rectArrayForCharacterRange:NSMakeRange(editingLocation, 0)
-                                                    withinSelectedCharacterRange:NSMakeRange(editingLocation, 0)
-                                                                 inTextContainer:textView.textContainer
-                                                                       rectCount:&count];
-        
-        [self.emitter emitAtPosition:targetRect.origin onView:textView];
-        [self.rocker roll:textView];
+                                                   withinSelectedCharacterRange:NSMakeRange(editingLocation, 0)
+                                                                inTextContainer:textView.textContainer
+                                                                      rectCount:&count];
+        if ([self isEmitModeEnabled]) {
+            [self.emitter emitAtPosition:targetRect.origin onView:textView];
+        }
+        if ([self isRollModeEnabled]) {
+            [self.rocker roll:textView];
+        }
     }
 }
 
 #pragma mark - Methods
 
-- (void)setActivatePowerModeEnabled:(BOOL)enabled
+- (void)setActivatePowerModeEmitEnabled:(BOOL)enabled
 {
-    [self updateUserDefaultsWithEnabled:enabled];
+    [self updateUserDefaultsWithEmitEnabled:enabled];
     [self updateMenuTitles];
     
-    if ( enabled )
+    if ( enabled || [self isRollModeEnabled])
+    {
+        [[NSNotificationCenter defaultCenter] addObserver:self
+                                                 selector:@selector(textDidChange:)
+                                                     name:NSTextDidChangeNotification
+                                                   object:nil];
+    }
+    else
+    {
+        [[NSNotificationCenter defaultCenter] removeObserver:self
+                                                        name:NSTextDidChangeNotification
+                                                      object:nil];
+    }
+}
+
+- (void)setActivatePowerModeRollEnabled:(BOOL)enabled
+{
+    [self updateUserDefaultsWithRollEnabled:enabled];
+    [self updateMenuTitles];
+    
+    if ( enabled || [self isEmitModeEnabled])
     {
         [[NSNotificationCenter defaultCenter] addObserver:self
                                                  selector:@selector(textDidChange:)
@@ -120,22 +146,41 @@ static XActivatePowerMode * __sharedPlugin = nil;
 
 #pragma mark - UserDefaults
 
-- (BOOL)isActivatePowerModeEnabled
+- (BOOL)isEmitModeEnabled
 {
-    NSNumber * enabled = [[NSUserDefaults standardUserDefaults] objectForKey:kXActivatePowerModeEnabled];
+    NSNumber * enabled = [[NSUserDefaults standardUserDefaults] objectForKey:kXActivatePowerModeEmitEnabled];
     
     if ( enabled == nil )
     {
-        [self updateUserDefaultsWithEnabled:YES];
+        [self updateUserDefaultsWithEmitEnabled:YES];
         return YES;
     }
     
     return [enabled boolValue];
 }
 
-- (void)updateUserDefaultsWithEnabled:(BOOL)enabled
+- (BOOL)isRollModeEnabled
 {
-    [[NSUserDefaults standardUserDefaults] setBool:enabled forKey:kXActivatePowerModeEnabled];
+    NSNumber * enabled = [[NSUserDefaults standardUserDefaults] objectForKey:kXActivatePowerModeRollEnabled];
+    
+    if ( enabled == nil )
+    {
+        [self updateUserDefaultsWithRollEnabled:YES];
+        return YES;
+    }
+    
+    return [enabled boolValue];
+}
+
+- (void)updateUserDefaultsWithEmitEnabled:(BOOL)enabled
+{
+    [[NSUserDefaults standardUserDefaults] setBool:enabled forKey:kXActivatePowerModeEmitEnabled];
+    [[NSUserDefaults standardUserDefaults] synchronize];
+}
+
+- (void)updateUserDefaultsWithRollEnabled:(BOOL)enabled
+{
+    [[NSUserDefaults standardUserDefaults] setBool:enabled forKey:kXActivatePowerModeRollEnabled];
     [[NSUserDefaults standardUserDefaults] synchronize];
 }
 
@@ -148,27 +193,42 @@ static XActivatePowerMode * __sharedPlugin = nil;
     if ( mainItem )
     {
         [[mainItem submenu] addItem:[NSMenuItem separatorItem]];
-
-        NSMenuItem * menuItem = [[NSMenuItem alloc] init];
-        menuItem.action = @selector(toggleEnabled:);
-        menuItem.target = self;
-        menuItem.title = @"Activate Power Mode";
-        [[mainItem submenu] addItem:menuItem];
         
-        self.menuItem = menuItem;
+        NSMenuItem * menuItemEmit = [[NSMenuItem alloc] init];
+        menuItemEmit.action = @selector(toggleEmitterEnabled:);
+        menuItemEmit.target = self;
+        menuItemEmit.title = @"Power Mode - Toggle Emitter";
+        [[mainItem submenu] addItem:menuItemEmit];
+        
+        self.menuItemEmitter = menuItemEmit;
+        
+        NSMenuItem * menuItemRoll = [[NSMenuItem alloc] init];
+        menuItemRoll.action = @selector(toggleRollerEnabled:);
+        menuItemRoll.target = self;
+        menuItemRoll.title = @"Power Mode - Toggle Roller";
+        [[mainItem submenu] addItem:menuItemRoll];
+        
+        self.menuItemEmitter = menuItemEmit;
+        self.menuItemRoller = menuItemRoll;
         
         [self updateMenuTitles];
     }
 }
 
-- (void)toggleEnabled:(id)sender
+- (void)toggleEmitterEnabled:(id)sender
 {
-    [self setActivatePowerModeEnabled:![self isActivatePowerModeEnabled]];
+    [self setActivatePowerModeEmitEnabled:![self isEmitModeEnabled]];
+}
+
+- (void)toggleRollerEnabled:(id)sender
+{
+    [self setActivatePowerModeRollEnabled:![self isRollModeEnabled]];
 }
 
 - (void)updateMenuTitles
 {
-    self.menuItem.state = [self isActivatePowerModeEnabled];
+    self.menuItemEmitter.state = [self isEmitModeEnabled];
+    self.menuItemRoller.state = [self isRollModeEnabled];
 }
 
 @end

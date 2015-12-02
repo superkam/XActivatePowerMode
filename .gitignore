@@ -26,3 +26,4 @@ DerivedData
 #Pods/
 
 screenshots
+.DS_Store
